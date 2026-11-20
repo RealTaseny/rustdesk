@@ -1188,7 +1188,11 @@ pub mod service {
                             if !authorize_uinput_peer(postfix, &stream) {
                                 continue;
                             }
-                            log::debug!("Got new connection of uinput ipc {}", postfix);
+                            if postfix == crate::platform::linux::gamepad::host::IPC_POSTFIX {
+                                log::trace!("Got new connection of uinput ipc {}", postfix);
+                            } else {
+                                log::debug!("Got new connection of uinput ipc {}", postfix);
+                            }
                             handler(Connection::new(stream));
                         }
                         Err(err) => {
@@ -1220,6 +1224,8 @@ pub mod service {
     /// Start uinput mouse service.
     #[tokio::main(flavor = "current_thread")]
     pub async fn start_service_control() {
+        use crate::platform::linux::gamepad::host;
+        tokio::spawn(start_service(host::IPC_POSTFIX, host::spawn_service));
         log::info!("start uinput control service");
         start_service(IPC_POSTFIX_CONTROL, spawn_controller_handler).await;
     }

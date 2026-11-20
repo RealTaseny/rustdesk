@@ -2,6 +2,8 @@ use super::{gtk_sudo, CursorData, ResultType};
 use desktop::Desktop;
 pub use base::platform::linux::*;
 
+pub(crate) mod gamepad;
+
 #[cfg(feature = "drm")]
 pub fn dispatch_wayland_display_probe() {
     use std::ffi::OsStr;
