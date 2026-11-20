@@ -515,6 +515,12 @@ class RustdeskImpl {
     js.context.callMethod('setByName', ['enter_or_leave', enter]);
   }
 
+  void sessionSetGamepadFocus(
+      {required UuidValue sessionId,
+      required UuidValue viewId,
+      required bool focused,
+      dynamic hint}) {}
+
   Future<void> sessionInputKey(
       {required UuidValue sessionId,
       required String name,

@@ -703,6 +703,26 @@ pub fn session_input_key(
     }
 }
 
+pub fn session_set_gamepad_focus(
+    _session_id: SessionID,
+    _view_id: SessionID,
+    _focused: bool,
+) -> SyncReturn<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::platform::linux::gamepad::client;
+
+        if !_focused {
+            client::set_focus(_view_id, None);
+        } else if let Some(session) = sessions::get_session_by_session_id(&_session_id) {
+            if session.is_default() {
+                client::set_focus(_view_id, Some(&session.lc));
+            }
+        }
+    }
+    SyncReturn(())
+}
+
 pub fn session_input_string(session_id: SessionID, value: String) {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
         // #[cfg(any(target_os = "android", target_os = "ios"))]
