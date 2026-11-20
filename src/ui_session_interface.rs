@@ -7,7 +7,10 @@ use crate::{
     ui_interface::use_texture_render,
 };
 use async_trait::async_trait;
-#[cfg(all(target_os = "windows", not(feature = "flutter")))]
+#[cfg(any(
+    all(target_os = "windows", not(feature = "flutter")),
+    all(target_os = "linux", feature = "flutter")
+))]
 use base::config::keys;
 #[cfg(not(feature = "flutter"))]
 use base::fs;
@@ -398,6 +401,10 @@ impl<T: InvokeUiSession> Session<T> {
         }
         if let Some(msg) = msg {
             self.send(Data::Message(msg));
+        }
+        #[cfg(all(target_os = "linux", feature = "flutter"))]
+        if name == keys::OPTION_FORWARD_GAMEPADS || name == "view-only" {
+            self.send(Data::GamepadOptionsChanged);
         }
     }
 

@@ -2,6 +2,8 @@
 use crate::clipboard::{clipboard_listener, update_clipboard, ClipboardSide};
 #[cfg(not(any(target_os = "ios")))]
 use crate::{audio_service, clipboard::CLIPBOARD_INTERVAL, ConnInner, CLIENT_SERVER};
+#[cfg(all(target_os = "linux", feature = "flutter"))]
+use crate::platform::linux::gamepad;
 use crate::{
     client::{
         self, new_voice_call_request, Client, Data, Interface, MediaData, MediaSender,
@@ -104,6 +106,10 @@ pub struct Remote<T: InvokeUiSession> {
     sent_close_reason: bool,
     cursor_dedupe: CursorDedupe,
     trusted_device: crate::trusted_devices::client::Session,
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    gamepads: Option<gamepad::client::Controller>,
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    gamepad_input_allowed: bool,
 }
 
 #[derive(Default)]
@@ -113,6 +119,8 @@ struct ParsedPeerInfo {
     idd_impl: String,
     support_view_camera: bool,
     support_terminal: bool,
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    support_gamepads: bool,
 }
 
 impl ParsedPeerInfo {
@@ -158,6 +166,10 @@ impl<T: InvokeUiSession> Remote<T> {
             sent_close_reason: false,
             cursor_dedupe: Default::default(),
             trusted_device: Default::default(),
+            #[cfg(all(target_os = "linux", feature = "flutter"))]
+            gamepads: None,
+            #[cfg(all(target_os = "linux", feature = "flutter"))]
+            gamepad_input_allowed: true,
         }
     }
 
@@ -329,6 +341,28 @@ impl<T: InvokeUiSession> Remote<T> {
                                 }
                             }
                         }
+                        _frame = async {
+                            #[cfg(all(target_os = "linux", feature = "flutter"))]
+                            return gamepad::client::next_outbound(&mut self.gamepads).await;
+                            #[cfg(not(all(target_os = "linux", feature = "flutter")))]
+                            std::future::pending::<Option<GamepadChannel>>().await
+                        } => {
+                            #[cfg(all(target_os = "linux", feature = "flutter"))]
+                            if let Some(frame) = _frame {
+                                if let Err(err) = peer.send(&gamepad::message(frame)).await {
+                                    hbb_common::throttled_log!(
+                                        gamepad::ERROR_LOG_INTERVAL,
+                                        debug,
+                                        "Cannot send gamepad input to the remote computer: {err:#}"
+                                    );
+                                    self.stop_gamepads(&mut peer).await;
+                                    self.report_gamepad_error();
+                                }
+                            } else {
+                                self.stop_gamepads(&mut peer).await;
+                                self.report_gamepad_error();
+                            }
+                        }
                         _msg = rx_clip_client.recv() => {
                             #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
                             self.handle_local_clipboard_msg(&mut peer, _msg).await;
@@ -446,6 +480,10 @@ impl<T: InvokeUiSession> Remote<T> {
             Err(err) => {
                 self.handler.on_establish_connection_error(err.to_string());
             }
+        }
+        #[cfg(all(target_os = "linux", feature = "flutter"))]
+        {
+            self.gamepads = None;
         }
         self.handle_disconnected(round);
         #[cfg(target_os = "android")]
@@ -757,6 +795,10 @@ impl<T: InvokeUiSession> Remote<T> {
     async fn handle_msg_from_ui(&mut self, data: Data, peer: &mut Stream) -> bool {
         match data {
             Data::Close => {
+                #[cfg(all(target_os = "linux", feature = "flutter"))]
+                {
+                    self.gamepads = None;
+                }
                 self.send_close_reason(peer, "").await;
                 return false;
             }
@@ -829,6 +871,12 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                     Some(message::Union::Misc(misc)) => match misc.union {
                         Some(misc::Union::Option(ref option)) => {
+                            #[cfg(all(target_os = "linux", feature = "flutter"))]
+                            if option.disable_keyboard.enum_value()
+                                == Ok(option_message::BoolOption::Yes)
+                            {
+                                self.gamepads = None;
+                            }
                             if option.custom_fps > 0 {
                                 self.last_auto_fps = None;
                             }
@@ -849,6 +897,8 @@ impl<T: InvokeUiSession> Remote<T> {
                 }
                 allow_err!(peer.send(&msg).await);
             }
+            #[cfg(all(target_os = "linux", feature = "flutter"))]
+            Data::GamepadOptionsChanged => self.update_gamepads(peer).await,
             Data::SendFiles((id, r#type, path, to, file_num, include_hidden, is_remote)) => {
                 log::info!("send files, is remote {}", is_remote);
                 let od = can_enable_overwrite_detection(self.handler.lc.read().unwrap().version);
@@ -1821,9 +1871,37 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
 
                         self.is_connected = true;
+                        #[cfg(all(target_os = "linux", feature = "flutter"))]
+                        self.update_gamepads(peer).await;
                     }
                     _ => {}
                 },
+                #[cfg(all(target_os = "linux", feature = "flutter"))]
+                Some(message::Union::GamepadChannel(msg)) => {
+                    use base::message_proto::gamepad_channel::Union;
+                    if let Some(source) = self.gamepads.as_ref() {
+                        match msg.union {
+                            Some(Union::Close(true))
+                                if msg.device_id == 0 && msg.focus_epoch == 0 =>
+                            {
+                                hbb_common::throttled_log!(
+                                    gamepad::ERROR_LOG_INTERVAL,
+                                    debug,
+                                    "The remote computer closed the gamepad route"
+                                );
+                                self.stop_gamepads(peer).await;
+                                self.report_gamepad_error();
+                            }
+                            Some(Union::Attached(_) | Union::Rumble(_)) => {
+                                if !source.submit(msg).await {
+                                    self.stop_gamepads(peer).await;
+                                    self.report_gamepad_error();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 Some(message::Union::CursorData(cd)) if self.dedupes_cursors() => {
                     self.set_cursor_data_by_content(cd);
                 }
@@ -2278,6 +2356,11 @@ impl<T: InvokeUiSession> Remote<T> {
                         match p.permission.enum_value() {
                             Ok(Permission::Keyboard) => {
                                 *self.handler.server_keyboard_enabled.write().unwrap() = p.enabled;
+                                #[cfg(all(target_os = "linux", feature = "flutter"))]
+                                {
+                                    self.gamepad_input_allowed = p.enabled;
+                                    self.update_gamepads(peer).await;
+                                }
                                 #[cfg(feature = "flutter")]
                                 #[cfg(not(target_os = "ios"))]
                                 crate::flutter::update_text_clipboard_required();
@@ -2619,7 +2702,55 @@ impl<T: InvokeUiSession> Remote<T> {
                 .map(|v| v.as_bool())
                 .flatten()
                 .unwrap_or(false);
+            #[cfg(all(target_os = "linux", feature = "flutter"))]
+            {
+                self.peer_info.support_gamepads = platform_additions
+                    .get(gamepad::CAPABILITY)
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
+            }
         }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    async fn update_gamepads(&mut self, peer: &mut Stream) {
+        let enabled = self.is_connected
+            && self.peer_info.support_gamepads
+            && self.gamepad_input_allowed
+            && self.handler.is_default()
+            && !self.handler.get_toggle_option("view-only".to_owned())
+            && self.handler.get_toggle_option(keys::OPTION_FORWARD_GAMEPADS.to_owned());
+        if enabled && self.gamepads.is_none() {
+            let handler = self.handler.clone();
+            self.gamepads = Some(gamepad::client::Controller::start(
+                self.handler.lc.clone(),
+                move |error, text| {
+                    let kind = if error {
+                        "gamepad-error"
+                    } else {
+                        "gamepad-status"
+                    };
+                    handler.msgbox(kind, "", &text, "");
+                },
+            ));
+        } else if !enabled {
+            self.stop_gamepads(peer).await;
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    async fn stop_gamepads(&mut self, peer: &mut Stream) {
+        if self.gamepads.take().is_some() {
+            let mut msg = GamepadChannel::new();
+            msg.set_close(true);
+            allow_err!(peer.send(&gamepad::message(msg)).await);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    fn report_gamepad_error(&self) {
+        self.handler
+            .msgbox("gamepad-error", "", gamepad::client::ROUTE_UNAVAILABLE, "");
     }
 
     async fn handle_back_notification(&mut self, notification: BackNotification) -> bool {

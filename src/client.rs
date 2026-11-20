@@ -5038,6 +5038,8 @@ pub enum Data {
     RejectInsecureConnection,
     Login((String, String, String, bool)),
     Message(Message),
+    #[cfg(all(target_os = "linux", feature = "flutter"))]
+    GamepadOptionsChanged,
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     InitialClipboard(usize, Option<Message>),
     SendFiles((i32, JobType, String, String, i32, bool, bool)),
