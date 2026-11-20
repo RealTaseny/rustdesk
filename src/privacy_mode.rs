@@ -14,6 +14,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_x11;
 #[cfg(windows)]
 pub mod win_exclude_from_capture;
 #[cfg(windows)]
