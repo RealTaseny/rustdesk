@@ -827,5 +827,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Request approval", "请求批准"),
         ("Forever", "永久"),
         ("username-login-disabled-oidc-unavailable", "用户名和密码登录已禁用，且没有可用的 OIDC 登录方式。"),
+        ("Automatically hide the local screen during remote desktop sessions", "远程桌面连接时自动遮住本机屏幕"),
+        ("Privacy screen unavailable while another connection uses the desktop", "另一个连接正在使用桌面，无法启用隐私屏"),
+        ("Privacy screen requires a local X11 session with screen locking", "隐私屏需要支持锁屏的本机 X11 会话"),
+        ("Failed to cover all displays for the privacy screen", "无法遮住所有显示器，隐私屏启动失败"),
+        ("Privacy screen failed during the session", "隐私屏已失效，远程连接已断开"),
+        ("Failed to block local keyboard and mouse for the privacy screen", "无法屏蔽本机键盘和鼠标，隐私屏启动失败"),
     ].iter().cloned().collect();
 }

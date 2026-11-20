@@ -1461,6 +1461,12 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
       whitelist(),
       idWhitelist(),
       ...autoDisconnect(context),
+      if (isLinux)
+        _OptionCheckBox(
+            context,
+            'Automatically hide the local screen during remote desktop sessions',
+            kOptionAllowAutoPrivacyScreen,
+            enabled: enabled),
       _OptionCheckBox(context, 'keep-awake-during-incoming-sessions-label',
           kOptionKeepAwakeDuringIncomingSessions,
           reverse: false, enabled: enabled),
