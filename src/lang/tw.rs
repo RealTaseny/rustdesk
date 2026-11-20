@@ -833,5 +833,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Failed to cover all displays for the privacy screen", "無法遮住所有顯示器，隱私螢幕啟動失敗"),
         ("Privacy screen failed during the session", "隱私螢幕已失效，遠端連線已中斷"),
         ("Failed to block local keyboard and mouse for the privacy screen", "無法封鎖本機鍵盤和滑鼠，隱私螢幕啟動失敗"),
+        ("Forward gamepads", "轉發手把"),
+        ("Gamepad forwarding is unavailable", "手把轉發無法使用"),
+        ("Remote joystick device is unavailable", "受控端的手把裝置無法使用"),
+        ("Gamepads mapped", "手把對應已建立"),
     ].iter().cloned().collect();
 }

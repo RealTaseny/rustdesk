@@ -2585,6 +2585,10 @@ class _KeyboardMenu extends StatelessWidget {
               inputSource(),
               Divider(),
               viewMode(),
+              if (!isWeb &&
+                  isLinux &&
+                  pi.platformAdditions['gamepad_forwarding'] == true)
+                _gamepadToggle(),
               if ([kPeerPlatformWindows, kPeerPlatformMacOS, kPeerPlatformLinux]
                   .contains(pi.platform))
                 showMyCursor(),
@@ -2753,6 +2757,20 @@ class _KeyboardMenu extends StatelessWidget {
             : null,
         ffi: ffi,
         child: Text(translate('View Mode')));
+  }
+
+  Widget _gamepadToggle() {
+    return CkbMenuButton(
+        value: bind.sessionGetToggleOptionSync(
+            sessionId: ffi.sessionId, arg: kOptionForwardGamepads),
+        onChanged: (value) async {
+          if (value != null) {
+            await bind.sessionToggleOption(
+                sessionId: ffi.sessionId, value: kOptionForwardGamepads);
+          }
+        },
+        ffi: ffi,
+        child: Text(translate('Forward gamepads')));
   }
 
   showMyCursor() {
