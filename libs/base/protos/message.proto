@@ -1002,6 +1002,85 @@ message PortForwardChannel {
   }
 }
 
+message GamepadDevice {
+  message Axis {
+    uint32 code = 1;
+    sint32 minimum = 2;
+    sint32 maximum = 3;
+    int32 flat = 4;
+    int32 resolution = 5;
+    sint32 neutral = 6;
+  }
+
+  string name = 1;
+  uint32 bus = 2;
+  uint32 vendor = 3;
+  uint32 product = 4;
+  uint32 version = 5;
+  repeated uint32 buttons = 6;
+  repeated Axis axes = 7;
+  uint32 rumble_slots = 8;
+}
+
+message GamepadAttached {
+  enum Failure {
+    InvalidDevice = 0;
+    BackendUnavailable = 1;
+    JoydevUnavailable = 2;
+  }
+
+  oneof union {
+    uint32 joystick_index = 1;
+    Failure failure = 2;
+  }
+}
+
+message GamepadInput {
+  enum Kind {
+    Button = 0;
+    Axis = 1;
+  }
+
+  Kind kind = 1;
+  uint32 code = 2;
+  sint32 value = 3;
+}
+
+message GamepadFrame { repeated GamepadInput events = 1; }
+
+message GamepadRumble {
+  enum Action {
+    Stop = 0;
+    Play = 1;
+    Update = 2;
+    Erase = 3;
+  }
+
+  Action action = 1;
+  uint32 effect_id = 2;
+  uint32 strong = 3;
+  uint32 weak = 4;
+  uint32 duration_ms = 5;
+  uint32 delay_ms = 6;
+  uint32 repeats = 7;
+}
+
+message GamepadChannel {
+  // IDs are local to a desktop connection. ID zero is used for focus and close.
+  uint32 device_id = 1;
+  // Nonzero when focused. Input and rumble are scoped to this focus period.
+  uint32 focus_epoch = 2;
+  oneof union {
+    GamepadDevice attach = 3;
+    GamepadAttached attached = 4;
+    GamepadFrame frame = 5;
+    bool detach = 6;
+    bool focus = 7;
+    bool close = 8;
+    GamepadRumble rumble = 9;
+  }
+}
+
 message Message {
   oneof union {
     SignedId signed_id = 3;
@@ -1037,5 +1116,6 @@ message Message {
     PortForwardChannel port_forward_channel = 33;
     // Auto Login: the peer types the password only if it is at its logon or lock screen.
     OSLogin os_login = 34;
+    GamepadChannel gamepad_channel = 35;
   }
 }
