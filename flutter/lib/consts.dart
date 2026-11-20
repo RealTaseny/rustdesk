@@ -225,6 +225,7 @@ const String kOptionAllowDeepLinkServerSettings =
     "allow-deep-link-server-settings";
 
 const String kOptionToggleViewOnly = "view-only";
+const String kOptionForwardGamepads = "forward-gamepads";
 const String kOptionToggleShowMyCursor = "show-my-cursor";
 
 const String kOptionDisableFloatingWindow = "disable-floating-window";
