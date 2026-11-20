@@ -75,6 +75,8 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
+#[cfg(target_os = "linux")]
+mod linux_privacy;
 mod trusted_devices;
 
 const FAILURE_IDX_ID_WHITELIST: usize = 2;
@@ -385,6 +387,8 @@ pub struct Connection {
     recording: bool,
     block_input: bool,
     privacy_mode: bool,
+    #[cfg(target_os = "linux")]
+    linux_desktop: privacy_mode::linux_x11::Desktop,
     // Dropping the receiver cancels the pending activation.
     #[cfg(windows)]
     privacy_preparation: Option<(
@@ -606,6 +610,8 @@ impl Connection {
             recording: Self::permission(keys::OPTION_ENABLE_RECORD_SESSION, &control_permissions),
             block_input: Self::permission(keys::OPTION_ENABLE_BLOCK_INPUT, &control_permissions),
             privacy_mode: Self::permission(keys::OPTION_ENABLE_PRIVACY_MODE, &control_permissions),
+            #[cfg(target_os = "linux")]
+            linux_desktop: Default::default(),
             #[cfg(windows)]
             privacy_preparation: None,
             control_permissions,
@@ -718,7 +724,18 @@ impl Connection {
         conn.stream.set_send_timeout(SEND_TIMEOUT_VIDEO);
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        std::thread::spawn(move || Self::handle_input(_rx_input, tx_cloned));
+        std::thread::spawn({
+            #[cfg(target_os = "linux")]
+            let privacy_input = conn.linux_desktop.worker_input();
+            move || {
+                Self::handle_input(
+                    _rx_input,
+                    tx_cloned,
+                    #[cfg(target_os = "linux")]
+                    privacy_input,
+                )
+            }
+        });
         let mut second_timer = crate::rustdesk_interval(time::interval(Duration::from_secs(1)));
 
         #[cfg(feature = "unix-file-copy-paste")]
@@ -1177,6 +1194,13 @@ impl Connection {
                             conn.on_close("privacy mode", false).await;
                             break;
                         }
+                        #[cfg(target_os = "linux")]
+                        ipc::Data::PrivacyModeState((_, privacy_mode::PrivacyModeState::OffUnknown, _)) => {
+                            let reason = privacy_mode::linux_x11::LOST_MESSAGE;
+                            conn.on_close(reason, false).await;
+                            conn.send_close_reason_no_retry(reason).await;
+                            break;
+                        }
                         #[cfg(windows)]
                         ipc::Data::PrivacyModeState((_, privacy_mode::PrivacyModeState::OffUnknown, impl_key)) => {
                             if privacy_mode::get_cur_impl_key().as_deref() == Some(impl_key.as_str()) {
@@ -1255,6 +1279,8 @@ impl Connection {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        conn.linux_desktop.stop_privacy();
         #[cfg(feature = "unix-file-copy-paste")]
         {
             conn.try_empty_file_clipboard();
@@ -1285,7 +1311,11 @@ impl Connection {
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn handle_input(receiver: std_mpsc::Receiver<MessageInput>, tx: Sender) {
+    fn handle_input(
+        receiver: std_mpsc::Receiver<MessageInput>,
+        tx: Sender,
+        #[cfg(target_os = "linux")] privacy_input: privacy_mode::linux_x11::WorkerInput,
+    ) {
         let mut block_input_mode = false;
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -1295,7 +1325,16 @@ impl Connection {
         #[cfg(target_os = "macos")]
         reset_input_ondisconn();
         loop {
-            match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+            let received = receiver.recv_timeout(std::time::Duration::from_millis(500));
+            #[cfg(target_os = "linux")]
+            let _privacy_permit = match (received.is_ok(), privacy_input.get()) {
+                (true, Some(gate)) => match gate.permit() {
+                    Some(permit) => Some(permit),
+                    None => break,
+                },
+                _ => None,
+            };
+            match received {
                 Ok(v) => match v {
                     MessageInput::Mouse(mouse_input) => {
                         handle_mouse(
@@ -1938,6 +1977,10 @@ impl Connection {
         if !self.check_trusted_device().await {
             return false;
         }
+        #[cfg(target_os = "linux")]
+        if self.is_remote() && !self.admit_linux_desktop().await {
+            return false;
+        }
         self.lr.trusted_device_v2_token.clear();
         self.authorized = true;
         self.unauthorized_id = None;
@@ -2224,9 +2267,23 @@ impl Connection {
         if !self.enroll_trusted_device(&mut res).await {
             return false;
         }
+        #[cfg(target_os = "linux")]
+        let privacy_coverage = self.linux_desktop.coverage();
+        #[cfg(target_os = "linux")]
+        if privacy_coverage == Some(false) {
+            self.send_login_error(privacy_mode::linux_x11::LOST_MESSAGE).await;
+            return false;
+        }
         let mut msg_out = Message::new();
         msg_out.set_login_response(res);
         self.send(msg_out).await;
+        #[cfg(target_os = "linux")]
+        if privacy_coverage == Some(true) {
+            if !sub_service {
+                return false;
+            }
+            self.send_linux_privacy_screen_confirmation().await;
+        }
         self.update_scoped_login_options().await;
         if let Some((dir, show_hidden)) = self.file_transfer.clone() {
             self.keyboard = false;
@@ -5424,6 +5481,8 @@ impl Connection {
             return;
         }
         self.closed = true;
+        #[cfg(target_os = "linux")]
+        let lock = !self.linux_desktop.stop_privacy() && lock;
         #[cfg(windows)]
         self.privacy_preparation.take();
         // If voice A,B -> C, and A,B has voice call
@@ -6883,6 +6942,8 @@ impl Default for PortableState {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.linux_desktop.stop_privacy();
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         self.release_pressed_modifiers();
 
