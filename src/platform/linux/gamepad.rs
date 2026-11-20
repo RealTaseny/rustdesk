@@ -1,7 +1,9 @@
 use base::message_proto::{gamepad_channel::Union, GamepadChannel, GamepadDevice, Message};
-#[cfg(test)]
+#[cfg(any(feature = "flutter", test))]
 use base::message_proto::{gamepad_input::Kind, GamepadInput};
 
+#[cfg(feature = "flutter")]
+pub(crate) mod client;
 pub(crate) mod host;
 mod uapi;
 
@@ -41,6 +43,20 @@ fn gamepad_axis(code: u32) -> bool {
     matches!(code, 0x00..=0x0a | 0x10..=0x1b | 0x28)
 }
 
+#[cfg(any(feature = "flutter", test))]
+fn axis_neutral(code: u32, min: i32, max: i32, has_right_stick: bool) -> i32 {
+    // ABS_HAT1 and ABS_HAT2 can also represent directional hats with signed ranges.
+    let hat_trigger = min >= 0 && matches!(code, 0x12..=0x15);
+    // ABS_Z/RZ are triggers on controllers with ABS_RX/RY for the right stick.
+    if hat_trigger || matches!(code, 6 | 9 | 10) || has_right_stick && matches!(code, 2 | 5) {
+        min
+    } else if min < 0 && max > 0 {
+        0
+    } else {
+        ((i64::from(min) + i64::from(max) + 1) / 2) as i32
+    }
+}
+
 fn valid_device(device: &GamepadDevice) -> bool {
     if device.name.is_empty()
         || device.name.len() >= hbb_common::libc::UINPUT_MAX_NAME_SIZE
@@ -73,7 +89,7 @@ fn valid_device(device: &GamepadDevice) -> bool {
         })
 }
 
-#[cfg(test)]
+#[cfg(any(feature = "flutter", test))]
 fn input(kind: Kind, code: u32, value: i32) -> GamepadInput {
     GamepadInput {
         kind: kind.into(),
@@ -86,6 +102,14 @@ fn input(kind: Kind, code: u32, value: i32) -> GamepadInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gamepad_analog_hat_triggers_release_to_minimum() {
+        for code in 0x12..=0x15 {
+            assert_eq!(axis_neutral(code, 0, 255, false), 0);
+            assert_eq!(axis_neutral(code, -1, 1, false), 0);
+        }
+    }
 
     #[test]
     fn gamepad_standard_grip_buttons_are_forwarded() {

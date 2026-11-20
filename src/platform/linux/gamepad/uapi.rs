@@ -15,6 +15,8 @@ pub(super) const EV_ABS: u16 = 3;
 pub(super) const EV_FF: u16 = 0x15;
 pub(super) const EV_UINPUT: u16 = 0x101;
 pub(super) const SYN_REPORT: u16 = 0;
+#[cfg(feature = "flutter")]
+pub(super) const SYN_DROPPED: u16 = 3;
 pub(super) const FF_RUMBLE: u16 = 0x50;
 pub(super) const UI_FF_UPLOAD: u16 = 1;
 pub(super) const UI_FF_ERASE: u16 = 2;
@@ -36,6 +38,15 @@ nix::ioctl_readwrite!(begin_ff_upload, b'U', 200, libc::uinput_ff_upload);
 nix::ioctl_write_ptr!(end_ff_upload, b'U', 201, libc::uinput_ff_upload);
 nix::ioctl_readwrite!(begin_ff_erase, b'U', 202, libc::uinput_ff_erase);
 nix::ioctl_write_ptr!(end_ff_erase, b'U', 203, libc::uinput_ff_erase);
+
+#[cfg(feature = "flutter")]
+nix::ioctl_read_buf!(ff_bits, b'E', 0x20 + EV_FF, u8);
+#[cfg(feature = "flutter")]
+nix::ioctl_read!(effect_count, b'E', 0x84, libc::c_int);
+#[cfg(feature = "flutter")]
+nix::ioctl_write_ptr!(upload_effect, b'E', 0x80, libc::ff_effect);
+#[cfg(feature = "flutter")]
+nix::ioctl_write_int!(erase_effect, b'E', 0x81);
 
 pub(super) fn open_uinput() -> io::Result<File> {
     let mut options = OpenOptions::new();

@@ -993,6 +993,20 @@ impl InvokeUiSession for FlutterHandler {
     fn on_connected(&self, _conn_type: ConnType) {}
 
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str, retry: bool) {
+        #[cfg(target_os = "linux")]
+        if matches!(msgtype, "gamepad-status" | "gamepad-error") {
+            let kind = if msgtype == "gamepad-error" { "error" } else { "info" };
+            self.push_event(
+                "toast",
+                &[
+                    ("type", json!(kind)),
+                    ("text", json!(text)),
+                    ("dur_msec", json!(4000)),
+                ],
+                &[],
+            );
+            return;
+        }
         if msgtype == "custom-error-trusted-device" {
             const ERROR_DURATION_MS: u32 = 10_000;
             self.push_event(
