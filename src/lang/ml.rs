@@ -827,5 +827,11 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Request approval", "അംഗീകാരം അഭ്യർത്ഥിക്കുക"),
         ("Forever", "എന്നേക്കും"),
         ("username-login-disabled-oidc-unavailable", "ഉപയോക്തൃനാമവും പാസ്‌വേഡും ഉപയോഗിച്ചുള്ള ലോഗിൻ പ്രവർത്തനരഹിതമാക്കിയിരിക്കുന്നു, കൂടാതെ OIDC ലോഗിൻ രീതികളൊന്നും ലഭ്യമല്ല."),
+        ("Automatically hide the local screen during remote desktop sessions", ""),
+        ("Privacy screen unavailable while another connection uses the desktop", ""),
+        ("Privacy screen requires a local X11 session with screen locking", ""),
+        ("Failed to cover all displays for the privacy screen", ""),
+        ("Privacy screen failed during the session", ""),
+        ("Failed to block local keyboard and mouse for the privacy screen", ""),
     ].iter().cloned().collect();
 }
