@@ -129,6 +129,8 @@ pub fn init_sodium() {
 }
 
 pub fn global_init() -> bool {
+    #[cfg(target_os = "linux")]
+    crate::privacy_mode::linux_x11::dispatch_guard();
     init_sodium();
     #[cfg(all(target_os = "linux", feature = "drm"))]
     crate::platform::linux::dispatch_wayland_display_probe();

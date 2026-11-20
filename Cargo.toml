@@ -40,7 +40,7 @@ drm-wake = ["drm"]
 linux-pkg-config = ["magnum-opus/linux-pkg-config", "scrap/linux-pkg-config"]
 unix-file-copy-paste = [
     "dep:x11-clipboard",
-    "dep:x11rb",
+    "x11rb/all-extensions",
     "dep:percent-encoding",
     "dep:once_cell",
     "clipboard/unix-file-copy-paste",
@@ -197,10 +197,10 @@ evdev = { git="https://github.com/rustdesk-org/evdev" }
 dbus = "0.9"
 dbus-crossroads = "0.5"
 x11-clipboard = {git="https://github.com/clslaid/x11-clipboard", branch = "feat/store-batch", optional = true}
-x11rb =  {version = "0.12", features = ["all-extensions"], optional = true}
+x11rb = { version = "0.12", features = ["randr", "res", "xfixes", "xinput", "xtest"] }
 percent-encoding = {version = "2.3", optional = true}
 once_cell = {version = "1.18", optional = true}
-nix = { version = "0.29", features = ["term", "process"]}
+nix = { version = "0.29", features = ["term", "process", "poll"]}
 gtk = "0.18"
 termios = "0.3"
 terminfo = "0.8"
