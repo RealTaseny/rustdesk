@@ -14,6 +14,8 @@ use crate::clipboard_file::*;
 use crate::keyboard::client::map_key_to_control_key;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::platform::WallPaperRemover;
+#[cfg(target_os = "linux")]
+use crate::platform::linux::gamepad;
 #[cfg(windows)]
 use crate::portable_service::client as portable_client;
 use crate::{
@@ -380,6 +382,8 @@ pub struct Connection {
     awaiting_2fa: bool,
     trusted_device: Option<crate::trusted_devices::host::Attempt>,
     keyboard: bool,
+    #[cfg(target_os = "linux")]
+    gamepads: Option<gamepad::host::Session>,
     clipboard: bool,
     audio: bool,
     file: bool,
@@ -602,6 +606,8 @@ impl Connection {
             authorized: false,
             unauthorized_id: Some(unauthorized),
             keyboard: Self::permission(keys::OPTION_ENABLE_KEYBOARD, &control_permissions),
+            #[cfg(target_os = "linux")]
+            gamepads: None,
             clipboard: Self::permission(keys::OPTION_ENABLE_CLIPBOARD, &control_permissions),
             audio: Self::permission(keys::OPTION_ENABLE_AUDIO, &control_permissions),
             // to-do: make sure is the option correct here
@@ -833,6 +839,10 @@ impl Connection {
                             }
                             if &name == "keyboard" {
                                 conn.keyboard = enabled;
+                                #[cfg(target_os = "linux")]
+                                if !enabled {
+                                    conn.gamepads = None;
+                                }
                                 conn.send_permission(Permission::Keyboard, enabled).await;
                                 // Until authorized, only record the value; try_sub_monitor_services subscribes from it.
                                 if let Some(s) = conn.server.upgrade().filter(|_| conn.authorized) {
@@ -1087,6 +1097,24 @@ impl Connection {
                         break;
                     }
                 },
+                _gamepad_event = async {
+                    #[cfg(target_os = "linux")]
+                    return gamepad::host::next_event(&mut conn.gamepads).await;
+                    #[cfg(not(target_os = "linux"))]
+                    std::future::pending::<ResultType<Option<GamepadChannel>>>().await
+                } => {
+                    #[cfg(target_os = "linux")]
+                    match _gamepad_event {
+                        Ok(Some(reply)) => {
+                            if let Err(err) = conn.stream.send(&gamepad::message(reply)).await {
+                                log::trace!("Gamepad reply failed: {err}");
+                                conn.gamepads = None;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => conn.close_failed_gamepad_route(err).await,
+                    }
+                }
                 _ = conn.file_timer.tick() => {
                     if !conn.read_jobs.is_empty() {
                         conn.send_to_cm(ipc::Data::FileTransferLog(("transfer".to_string(), fs::serialize_transfer_jobs(&conn.read_jobs))));
@@ -2055,6 +2083,9 @@ impl Connection {
             if crate::platform::current_is_wayland() {
                 platform_additions.insert("is_wayland".into(), json!(true));
             }
+            if self.is_remote() {
+                platform_additions.insert(gamepad::CAPABILITY.into(), json!(true));
+            }
         }
         #[cfg(target_os = "windows")]
         {
@@ -2434,6 +2465,54 @@ impl Connection {
 
     fn peer_keyboard_enabled(&self) -> bool {
         self.keyboard && !self.disable_keyboard
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn handle_gamepad(&mut self, msg: GamepadChannel) {
+        use base::message_proto::gamepad_channel::Union;
+
+        if !self.authorized
+            || !self.is_remote()
+            || !self.peer_keyboard_enabled()
+            || !gamepad::host::from_controller(&msg)
+        {
+            return;
+        }
+        if matches!(msg.union, Some(Union::Close(_))) {
+            self.gamepads = None;
+            return;
+        }
+        if self.gamepads.is_none() {
+            if matches!(msg.union, Some(Union::Attach(_)))
+                || matches!(msg.union, Some(Union::Focus(_))) && msg.focus_epoch != 0
+            {
+                self.gamepads = Some(gamepad::host::Session::start());
+            } else {
+                return;
+            }
+        }
+        if let Some(session) = &mut self.gamepads {
+            let input = matches!(msg.union, Some(Union::Frame(_)));
+            match session.submit(msg) {
+                Ok(()) if input => self.update_auto_disconnect_timer(),
+                Ok(()) => {}
+                Err(err) => self.close_failed_gamepad_route(err).await,
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn close_failed_gamepad_route(&mut self, err: hbb_common::anyhow::Error) {
+        if self.gamepads.take().is_some() {
+            hbb_common::throttled_log!(
+                gamepad::ERROR_LOG_INTERVAL,
+                debug,
+                "Gamepad route closed: {err:#}"
+            );
+            let mut closed = GamepadChannel::new();
+            closed.set_close(true);
+            self.send(gamepad::message(closed)).await;
+        }
     }
 
     fn clipboard_enabled(&self) -> bool {
@@ -3284,6 +3363,8 @@ impl Connection {
                 return true;
             }
             match msg.union {
+                #[cfg(target_os = "linux")]
+                Some(message::Union::GamepadChannel(msg)) => self.handle_gamepad(msg).await,
                 #[allow(unused_mut)]
                 Some(message::Union::MouseEvent(mut me)) => {
                     if self.is_authed_view_camera_conn() {
@@ -5155,6 +5236,10 @@ impl Connection {
         if let Ok(q) = o.disable_keyboard.enum_value() {
             if q != BoolOption::NotSet {
                 self.disable_keyboard = q == BoolOption::Yes;
+                #[cfg(target_os = "linux")]
+                if self.disable_keyboard {
+                    self.gamepads = None;
+                }
                 if let Some(s) = self.server.upgrade() {
                     s.write().unwrap().subscribe(
                         super::clipboard_service::NAME,
@@ -5477,6 +5562,10 @@ impl Connection {
     }
 
     async fn on_close(&mut self, reason: &str, lock: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            self.gamepads = None;
+        }
         if self.closed {
             return;
         }
@@ -6378,6 +6467,7 @@ impl Connection {
             Some(message::Union::TerminalAction(_)) => "terminal_action",
             Some(message::Union::TerminalResponse(_)) => "terminal_response",
             Some(message::Union::PortForwardChannel(_)) => "port_forward_channel",
+            Some(message::Union::GamepadChannel(_)) => "gamepad_channel",
             Some(message::Union::OsLogin(_)) => "os_login",
             Some(message::Union::Misc(misc)) => Self::misc_message_family(misc),
             Some(_) => "message.other",
@@ -8018,6 +8108,13 @@ mod test {
 
         for (conn_type, messages) in cases {
             assert_scopes(conn_type, messages);
+            assert_scopes(
+                conn_type,
+                [(
+                    msg(|msg| msg.set_gamepad_channel(GamepadChannel::new())),
+                    (!matches!(conn_type, AuthConnType::Remote)).then_some("gamepad_channel"),
+                )],
+            );
         }
     }
 

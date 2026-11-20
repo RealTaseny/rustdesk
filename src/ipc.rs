@@ -1688,6 +1688,16 @@ where
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_max_packet_length(&mut self, max: usize) {
+        self.inner.codec_mut().set_max_packet_length(max);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn into_framed(self) -> Framed<T, BytesCodec> {
+        self.inner
+    }
+
     pub async fn send(&mut self, data: &Data) -> ResultType<()> {
         let v = serde_json::to_vec(data)?;
         self.inner.send(bytes::Bytes::from(v)).await?;
