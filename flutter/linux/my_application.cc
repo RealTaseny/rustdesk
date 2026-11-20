@@ -1,6 +1,7 @@
 #include "my_application.h"
 
 #include "bump_mouse.h"
+#include "gamepad_window_focus.h"
 
 #include <flutter_linux/flutter_linux.h>
 #ifdef GDK_WINDOWING_X11
@@ -96,6 +97,7 @@ static void on_subwindow_created(FlPluginRegistry* registry) {
   FlView* view = FL_VIEW(registry);
   GtkWidget* toplevel = gtk_widget_get_toplevel(GTK_WIDGET(view));
   if (toplevel != NULL && GTK_IS_WINDOW(toplevel)) {
+    gamepad_window_focus_init(GTK_WINDOW(toplevel), fl_view_get_engine(view));
     FlMethodChannel* channel = side_buttons_create_channel(fl_view_get_engine(view));
     if (channel == NULL) return;
     side_buttons_init_for_window(GTK_WINDOW(toplevel), channel);
@@ -178,6 +180,7 @@ static void my_application_activate(GApplication* application) {
       (WindowCreatedCallback)on_subwindow_created);
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
+  gamepad_window_focus_init(window, fl_view_get_engine(view));
 
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
   self->host_channel = fl_method_channel_new(

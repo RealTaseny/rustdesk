@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_hbb/models/state_model.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../consts.dart';
 import '../../common/widgets/overlay.dart';
@@ -29,6 +30,20 @@ import 'package:flutter_hbb/native/custom_cursor.dart'
     if (dart.library.html) 'package:flutter_hbb/web/custom_cursor.dart';
 
 final SimpleWrapper<bool> _firstEnterImage = SimpleWrapper(false);
+
+final _gamepadWindowFocused = () {
+  final focused = ValueNotifier(false);
+  const EventChannel('org.rustdesk.rustdesk/gamepad_window_focus')
+      .receiveBroadcastStream()
+      .listen(
+    (value) => focused.value = value == true,
+    onError: (Object error) {
+      focused.value = false;
+      debugPrint('Cannot observe gamepad window focus: $error');
+    },
+  );
+  return focused;
+}();
 
 // Used to skip session close if "move to new window" is clicked.
 final Map<String, bool> closeSessionOnDispose = {};
@@ -92,6 +107,7 @@ class _RemotePageState extends State<RemotePage>
   Timer? _timer;
   String keyboardMode = "legacy";
   bool _isWindowBlur = false;
+  late final _gamepadViewId = Uuid().v4obj();
   // Known macOS remote-input trade-offs (kept simple intentionally):
   // 1. Dialogs rely on FocusNode loss plus middleBlocked, not mirrored dialog
   //    state. Reproduce: activate remote input, open a dialog, then type.
@@ -208,6 +224,12 @@ class _RemotePageState extends State<RemotePage>
           sessionId: sessionId, arg: kOptionZoomCursor);
     });
     DesktopMultiWindow.addListener(this);
+    if (!isWeb && isLinux) {
+      _gamepadWindowFocused.addListener(_syncGamepadFocus);
+      _tabStateSubscription =
+          widget.tabController?.state.listen((_) => _syncGamepadFocus());
+      _syncGamepadFocus();
+    }
     // if (!_isCustomCursorInited) {
     //   customCursorController.registerNeedUpdateCursorCallback(
     //       (String? lastKey, String? currentKey) async {
@@ -287,6 +309,13 @@ class _RemotePageState extends State<RemotePage>
     return selected >= 0 &&
         selected < tabState.tabs.length &&
         tabState.tabs[selected].key == widget.id;
+  }
+
+  void _syncGamepadFocus() {
+    bind.sessionSetGamepadFocus(
+        sessionId: sessionId,
+        viewId: _gamepadViewId,
+        focused: _gamepadWindowFocused.value && _isSelectedTab);
   }
 
   // Every Windows requestFocus() must pass this, or a blocking dialog or an
@@ -653,6 +682,12 @@ class _RemotePageState extends State<RemotePage>
   @override
   Future<void> dispose() async {
     final closeSession = closeSessionOnDispose.remove(widget.id) ?? true;
+    if (!isWeb && isLinux) {
+      _gamepadWindowFocused.removeListener(_syncGamepadFocus);
+      bind.sessionSetGamepadFocus(
+          sessionId: sessionId, viewId: _gamepadViewId, focused: false);
+      _tabStateSubscription?.cancel();
+    }
 
     // https://github.com/flutter/flutter/issues/64935
     if (isMacOS) {
