@@ -28,6 +28,7 @@ const GUARD_ARG: &str = "--x11-privacy-screen-guard";
 const RECOVER_ARG: &str = "--x11-privacy-screen-recover";
 const COVERED: &str = "covered";
 const INPUT_BLOCK_FAILED: &str = "input-block-failed";
+const STARTUP_ROLLED_BACK: &str = "rolled-back ";
 const START_TIMEOUT: Duration = Duration::from_secs(6);
 const COVERAGE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -172,27 +173,47 @@ impl ScreenProcess {
         let slot_for_task = slot.clone();
         tokio::spawn(async move {
             let mut reports = BufReader::new(stdout).lines();
-            let failure = match timeout(START_TIMEOUT, reports.next_line()).await {
+            let (failure, rolled_back) = match timeout(START_TIMEOUT, reports.next_line()).await {
                 Ok(Ok(Some(report))) if report == COVERED => {
                     tx.send_replace(Status::Covered);
                     while matches!(
                         timeout(COVERAGE_TIMEOUT, reports.next_line()).await,
                         Ok(Ok(Some(report))) if report == COVERED
                     ) {}
-                    Failure::Lost
+                    (Failure::Lost, false)
                 }
-                Ok(Ok(Some(report))) if report == "busy" => Failure::Busy,
-                Ok(Ok(Some(report))) if report == "unsupported" => Failure::Unsupported,
-                Ok(Ok(Some(report))) if report == INPUT_BLOCK_FAILED => Failure::InputBlock,
-                _ => Failure::Start,
+                Ok(Ok(Some(report))) => {
+                    let restored = report.strip_prefix(STARTUP_ROLLED_BACK);
+                    let failure = match restored.unwrap_or(&report) {
+                        "busy" => Failure::Busy,
+                        "unsupported" => Failure::Unsupported,
+                        INPUT_BLOCK_FAILED => Failure::InputBlock,
+                        _ => Failure::Start,
+                    };
+                    (failure, restored.is_some())
+                }
+                _ => (Failure::Start, false),
             };
             let was_running = input_for_task.stop();
+            drop(reports);
+            if rolled_back {
+                if let Err(error) = child.wait().await {
+                    hbb_common::throttled_log!(
+                        Duration::from_secs(5),
+                        warn,
+                        "Could not reap the X11 privacy screen helper after rollback: {error}"
+                    );
+                }
+                // Show the startup error once the helper has freed the desktop for retry.
+                drop(slot_for_task);
+                tx.send_replace(Status::Failed(failure));
+                return;
+            }
             tx.send_replace(Status::Failed(failure));
             if was_running && failure == Failure::Lost {
                 log::warn!("{}", LOST_MESSAGE);
                 on_lost();
             }
-            drop(reports);
             let status = child.wait().await;
             if !matches!(failure, Failure::Busy | Failure::Unsupported)
                 && !matches!(&status, Ok(status) if status.success())
