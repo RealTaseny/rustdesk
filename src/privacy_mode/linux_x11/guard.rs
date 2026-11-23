@@ -21,7 +21,10 @@ use std::{
 use x11rb::{
     connection::Connection,
     protocol::{
-        randr::{ConnectionExt as _, Crtc, GetCrtcGammaReply, Mode, Output, Rotation, SetConfig},
+        randr::{
+            ConnectionExt as _, Crtc, GetCrtcGammaReply, GetCrtcInfoReply,
+            GetScreenResourcesCurrentReply, Mode, Output, Rotation, SetConfig,
+        },
         xfixes::ConnectionExt as _,
         xproto::{ConnectionExt as _, ScreenSaver},
     },
@@ -83,7 +86,7 @@ pub(super) fn run(recovery: bool) -> ResultType<()> {
     }
     let mut local_input = None;
     if !recovery {
-        let recovering_previous_screen = !blackout.backup.is_empty();
+        let mut lock_required = !blackout.backup.is_empty();
         let mut failure = "failed";
         let result = (|| {
             let layout = blackout.cover()?;
@@ -92,13 +95,22 @@ pub(super) fn run(recovery: bool) -> ResultType<()> {
                 error
             })?;
             local_input = Some(input);
-            if recovering_previous_screen {
+            if lock_required {
                 desktop.wait_for_lock(&display, &mut blackout, &mut local_input)?;
             }
-            blackout.monitor(&layout, local_input.as_ref())
+            blackout.monitor(&layout, local_input.as_ref(), &mut lock_required)
         })();
         if let Err(error) = result {
             log::warn!("X11 privacy screen coverage failed: {error:#}");
+            if !lock_required {
+                // A new session cannot access the desktop before the first coverage report.
+                blackout.restore()?;
+                drop(local_input);
+                if let Err(error) = report(&format!("{}{failure}", super::STARTUP_ROLLED_BACK)) {
+                    log::trace!("Could not report privacy screen rollback to the host: {error}");
+                }
+                return Ok(());
+            }
             if let Err(error) = report(failure) {
                 log::debug!("Could not report privacy screen failure to the host: {error}");
             }
@@ -324,15 +336,26 @@ fn display_number(display: &str) -> Option<u16> {
     number_and_screen.split('.').next()?.parse().ok()
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct ActiveCrtc {
-    // The configuration timestamp also changes when an output is replaced by another on
-    // the same connector.
-    timestamp: u32,
+    last_set: u32,
     mode: Mode,
     outputs: Vec<Output>,
     position: (i16, i16),
     rotation: Rotation,
+}
+
+impl ActiveCrtc {
+    fn from_info(resources: &GetScreenResourcesCurrentReply, info: GetCrtcInfoReply) -> Self {
+        Self {
+            // The configuration timestamp also advances when available modes change.
+            last_set: resources.timestamp,
+            mode: info.mode,
+            outputs: info.outputs,
+            position: (info.x, info.y),
+            rotation: info.rotation,
+        }
+    }
 }
 
 struct Blackout {
@@ -362,7 +385,7 @@ impl Blackout {
                 .x11
                 .randr_get_screen_resources_current(screen.root)?
                 .reply()?;
-            for crtc in resources.crtcs {
+            for &crtc in &resources.crtcs {
                 let info = self
                     .x11
                     .randr_get_crtc_info(crtc, resources.config_timestamp)?
@@ -371,16 +394,7 @@ impl Blackout {
                     hbb_common::bail!("RandR changed while reading the active displays");
                 }
                 if info.mode != 0 && !info.outputs.is_empty() {
-                    displays.insert(
-                        crtc,
-                        ActiveCrtc {
-                            timestamp: resources.config_timestamp,
-                            mode: info.mode,
-                            outputs: info.outputs,
-                            position: (info.x, info.y),
-                            rotation: info.rotation,
-                        },
-                    );
+                    displays.insert(crtc, ActiveCrtc::from_info(&resources, info));
                 }
             }
         }
@@ -429,6 +443,7 @@ impl Blackout {
         &self,
         expected: &BTreeMap<Crtc, ActiveCrtc>,
         input: Option<&LocalInput>,
+        lock_required: &mut bool,
     ) -> ResultType<()> {
         let Some(input) = input else {
             hbb_common::bail!("Local input is unprotected");
@@ -443,6 +458,7 @@ impl Blackout {
                     hbb_common::bail!("RandR color table changed for CRTC {crtc}");
                 }
             }
+            *lock_required = true;
             report(super::COVERED)?;
             if parent_released(VERIFY_INTERVAL_MS.into())? {
                 return Ok(());
@@ -504,4 +520,38 @@ fn is_black(gamma: &GetCrtcGammaReply) -> bool {
         .chain(&gamma.green)
         .chain(&gamma.blue)
         .all(|&entry| entry == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActiveCrtc, GetCrtcInfoReply, GetScreenResourcesCurrentReply, Rotation};
+
+    #[test]
+    fn available_mode_changes_preserve_the_two_display_layout() {
+        let mut resources = GetScreenResourcesCurrentReply {
+            timestamp: 20,
+            config_timestamp: 10,
+            ..Default::default()
+        };
+        let layout = |resources: &GetScreenResourcesCurrentReply| {
+            [(0, 4), (800, 5)].map(|(x, output)| {
+                ActiveCrtc::from_info(
+                    resources,
+                    GetCrtcInfoReply {
+                        mode: 3,
+                        x,
+                        rotation: Rotation::ROTATE0,
+                        outputs: vec![output],
+                        ..Default::default()
+                    },
+                )
+            })
+        };
+        let covered = layout(&resources);
+        resources.config_timestamp = 30;
+        assert_eq!(covered, layout(&resources));
+
+        resources.timestamp = 40;
+        assert_ne!(covered, layout(&resources));
+    }
 }
